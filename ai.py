@@ -4,36 +4,41 @@ from config import ANTHROPIC_API_KEY, CLAUDE_MODEL
 client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
 CATEGORIES = [
-    "Food", "Transport", "Shopping",
-    "Home", "Health", "Entertainment", "Other"
+    "Food", "Transport", "Clothes",
+    "Home", "Health", "Entertainment", "Education", "Utilities", "Other"
 ]
+
 
 # ─── Custom Exceptions ────────────────────────────────────────
 
 class NoCreditsError(Exception):
-    """Raised when Anthropic account has no credits left."""
     pass
 
 
 # ─── Prompts ──────────────────────────────────────────────────
 
 EXTRACTION_PROMPT = """You are an expense extraction assistant for a Malaysian user.
-Your job is to extract the item name and amount from a casual message.
+Extract the item name, amount, and date from a casual message.
 
 Rules:
-- Reply in this exact format: ITEM|AMOUNT
-- ITEM is a short description of what was bought (in English)
-- AMOUNT is a number only (no currency symbols)
-- If no amount is found, use AMOUNT as 0.00
+- Reply in this exact format: ITEM|AMOUNT|DATE
+- ITEM: short description of what was bought (in English)
+- AMOUNT: number only, no currency symbols. If not found, use 0.00
+- DATE: in YYYY-MM-DD format.
+  - If user says "yesterday", calculate yesterday's date
+  - If user gives a date like "01.05.2023" or "1/5/2023", convert to YYYY-MM-DD
+  - If no date mentioned, use TODAY
 - Do not include any other text
 
+Today's date context will be provided in each message.
+
 Examples:
-"just bought nasi lemak for 5.50" → nasi lemak|5.50
-"rm12 grab to office" → grab to office|12.00
-"spent 89 on nike shirt today" → nike shirt|89.00
-"panadol at guardian, rm8.90" → panadol|8.90
-"netflix 17" → netflix|17.00
-"blender" → blender|0.00"""
+"nasi lemak 5.50" → nasi lemak|5.50|TODAY
+"yesterday I got bananas 20rm" → bananas|20.00|YESTERDAY
+"01.05.2023 apples - 10rm" → apples|10.00|2023-05-01
+"grab to office rm12 last monday" → grab to office|12.00|LAST_MONDAY
+"spent 89 on nike shirt today" → nike shirt|89.00|TODAY
+"panadol at guardian rm8.90" → panadol|8.90|TODAY"""
 
 CLASSIFICATION_PROMPT = f"""You are an expense categorization assistant.
 Classify the given expense into exactly one category.
@@ -59,7 +64,6 @@ random item → Other|60"""
 # ─── Private Helpers ──────────────────────────────────────────
 
 def _call_claude(system: str, user_message: str, max_tokens: int = 30) -> str:
-    """Make a Claude API call. Raises NoCreditsError if out of credits."""
     try:
         response = client.messages.create(
             model=CLAUDE_MODEL,
@@ -68,29 +72,31 @@ def _call_claude(system: str, user_message: str, max_tokens: int = 30) -> str:
             messages=[{"role": "user", "content": user_message}]
         )
         return response.content[0].text.strip()
-
-    except anthropic.BadRequestError as e:
-        raise e
-
     except anthropic.APIStatusError as e:
-        # Catch billing/credit errors
         error_message = str(e).lower()
         if "credit" in error_message or "billing" in error_message or e.status_code == 402:
             raise NoCreditsError("Anthropic account has no credits remaining.")
         raise e
 
 
-def _parse_extraction(raw: str) -> tuple[str, float]:
-    """Parse 'ITEM|AMOUNT' response from Claude."""
-    if "|" in raw:
-        parts = raw.split("|", 1)
+def _parse_extraction(raw: str, today: str, yesterday: str) -> tuple[str, float, str]:
+    """Parse 'ITEM|AMOUNT|DATE' response from Claude."""
+    parts = raw.split("|") if "|" in raw else []
+    if len(parts) == 3:
         item = parts[0].strip()
         try:
             amount = float(parts[1].strip())
         except ValueError:
             amount = 0.00
-        return item, amount
-    return raw.strip(), 0.00
+        date_raw = parts[2].strip().upper()
+        if date_raw == "TODAY":
+            date = today
+        elif date_raw == "YESTERDAY":
+            date = yesterday
+        else:
+            date = parts[2].strip()  # Already in YYYY-MM-DD from Claude
+        return item, amount, date
+    return raw.strip(), 0.00, today
 
 
 def _parse_classification(raw: str) -> tuple[str, int]:
@@ -111,13 +117,14 @@ def _parse_classification(raw: str) -> tuple[str, int]:
 
 # ─── Public Functions ─────────────────────────────────────────
 
-def extract_expense(user_message: str) -> tuple[str, float]:
+def extract_expense(user_message: str, today: str, yesterday: str) -> tuple[str, float, str]:
     """
-    Extract item name and amount from a free-form message.
-    Returns (item, amount).
+    Extract item, amount, and date from a free-form message.
+    Returns (item, amount, date).
     """
-    raw = _call_claude(EXTRACTION_PROMPT, user_message)
-    return _parse_extraction(raw)
+    prompt_with_date = f"Today is {today}. Yesterday was {yesterday}.\n\n{user_message}"
+    raw = _call_claude(EXTRACTION_PROMPT, prompt_with_date)
+    return _parse_extraction(raw, today, yesterday)
 
 
 def classify_expense(description: str) -> tuple[str, int]:
