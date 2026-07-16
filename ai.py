@@ -1,3 +1,4 @@
+import time
 import anthropic
 from config import ANTHROPIC_API_KEY, CLAUDE_MODEL
 
@@ -130,19 +131,24 @@ random item → Other|60"""
 # ─── Private Helpers ──────────────────────────────────────────
 
 def _call_claude(system: str, user_message: str, max_tokens: int = 30) -> str:
-    try:
-        response = client.messages.create(
-            model=CLAUDE_MODEL,
-            max_tokens=max_tokens,
-            system=system,
-            messages=[{"role": "user", "content": user_message}]
-        )
-        return response.content[0].text.strip()
-    except anthropic.APIStatusError as e:
-        error_message = str(e).lower()
-        if "credit" in error_message or "billing" in error_message or e.status_code == 402:
-            raise NoCreditsError("Anthropic account has no credits remaining.")
-        raise e
+    retries = 3
+    for attempt in range(retries):
+        try:
+            response = client.messages.create(
+                model=CLAUDE_MODEL,
+                max_tokens=max_tokens,
+                system=system,
+                messages=[{"role": "user", "content": user_message}]
+            )
+            return response.content[0].text.strip()
+        except anthropic.APIStatusError as e:
+            error_message = str(e).lower()
+            if "credit" in error_message or "billing" in error_message or e.status_code == 402:
+                raise NoCreditsError("Anthropic account has no credits remaining.")
+            if e.status_code in (429, 529) and attempt < retries - 1:
+                time.sleep(2 ** attempt)
+                continue
+            raise e
 
 
 def _resolve_date(date_raw: str, today: str, yesterday: str) -> str:
