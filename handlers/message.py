@@ -198,7 +198,18 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # Use AI to detect intent
-    intent = detect_intent(user_message)
+    try:
+        intent = detect_intent(user_message)
+    except NoCreditsError:
+        await update.message.reply_text(
+            "❌ *No API Credits Available*\n\nPlease top up at console.anthropic.com.",
+            parse_mode="Markdown"
+        )
+        return
+    except Exception as e:
+        await update.message.reply_text("❌ Something went wrong. Please try again.")
+        print(f"Intent detection error: {e}")
+        return
 
     if intent == "INCOME":
         await _handle_income(update, user.id, user_message)
